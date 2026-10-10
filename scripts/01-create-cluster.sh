@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launches the master and worker VMs from cloud-init.yaml.
+# Launches the master and $WORKER_COUNT worker VMs from cloud-init.yaml.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source config.env
@@ -9,12 +9,17 @@ if [[ ! "$K8S_VERSION" =~ ^v[0-9]+\.[0-9]+$ ]]; then
   exit 1
 fi
 
+if [[ ! "$WORKER_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WORKER_COUNT must be a positive integer (got: $WORKER_COUNT)" >&2
+  exit 1
+fi
+
 # Render the cloud-init template with the version from config.env.
 CLOUD_INIT=$(mktemp)
 trap 'rm -f "$CLOUD_INIT"' EXIT
 sed "s|\${K8S_VERSION}|$K8S_VERSION|g" cloud-init.yaml > "$CLOUD_INIT"
 
-for NAME in "$MASTER_NAME" "$WORKER_NAME"; do
+for NAME in "$MASTER_NAME" $(worker_names); do
   if multipass info "$NAME" &>/dev/null; then
     echo ">> $NAME already exists, skipping launch"
     continue

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Joins the worker node to the cluster using the command saved by 02-init-master.sh.
+# Joins every worker to the cluster using the command saved by 02-init-master*.sh.
+# Workers that already joined are skipped, so it is safe to re-run.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source config.env
@@ -9,12 +10,21 @@ if [ ! -f join-command.sh ]; then
   exit 1
 fi
 
-echo ">> Waiting for cloud-init to finish on $WORKER_NAME..."
-multipass exec "$WORKER_NAME" -- cloud-init status --wait || true
-
 JOIN_CMD=$(cat join-command.sh)
-echo ">> Joining $WORKER_NAME to the cluster..."
-multipass exec "$WORKER_NAME" -- sudo bash -c "$JOIN_CMD"
+
+for NAME in $(worker_names); do
+  echo ">> Waiting for cloud-init to finish on $NAME..."
+  multipass exec "$NAME" -- cloud-init status --wait || true
+
+  # kubelet.conf only exists once kubeadm join (or init) has succeeded on the node.
+  if multipass exec "$NAME" -- test -f /etc/kubernetes/kubelet.conf; then
+    echo ">> $NAME already joined, skipping"
+    continue
+  fi
+
+  echo ">> Joining $NAME to the cluster..."
+  multipass exec "$NAME" -- sudo bash -c "$JOIN_CMD"
+done
 
 echo
 echo ">> Cluster nodes:"

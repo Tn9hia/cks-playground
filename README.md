@@ -1,15 +1,16 @@
 # multipass-cks
 
-Dựng nhanh một cụm Kubernetes 2 node (1 master + 1 worker) bằng [Multipass](https://multipass.run) và `kubeadm` để luyện thi **CKS**. Có 2 lựa chọn CNI: **Cilium** hoặc **Calico**. Cả hai đều hỗ trợ NetworkPolicy.
+Dựng nhanh một cụm Kubernetes gồm 1 master và N worker (mặc định 2) bằng [Multipass](https://multipass.run) và `kubeadm` để luyện thi **CKS**. Có 2 lựa chọn CNI: **Cilium** hoặc **Calico**. Cả hai đều hỗ trợ NetworkPolicy.
 
 ## Thành phần
 
 | Thành phần | Giá trị mặc định | Sửa ở đâu |
 |---|---|---|
 | OS | Ubuntu 24.04 LTS | `config.env` (`VM_IMAGE`) |
-| Node | `k8s-master`, `k8s-worker` | `config.env` |
+| Node | `k8s-master`, `k8s-worker-1` … `k8s-worker-N` | `config.env` (`MASTER_NAME`, `WORKER_PREFIX`) |
+| Số worker | 2 | `config.env` (`WORKER_COUNT`) |
 | Tài nguyên mỗi VM | 2 CPU, 2G RAM, 10G disk | `config.env` |
-| Kubernetes | v1.34 (kubeadm / kubelet / kubectl) | `config.env` (`K8S_VERSION`) |
+| Kubernetes | v1.36 (kubeadm / kubelet / kubectl) | `config.env` (`K8S_VERSION`) |
 | Container runtime | containerd (systemd cgroup) | `cloud-init.yaml` |
 | Pod CIDR | `10.244.0.0/16` | `config.env` (`POD_CIDR`) |
 | CNI | Cilium 1.20.2 hoặc Calico v3.28.0 | `config.env` |
@@ -21,10 +22,10 @@ Dựng nhanh một cụm Kubernetes 2 node (1 master + 1 worker) bằng [Multipa
 ├── config.env                       # cấu hình chung, các script đều source file này
 ├── cloud-init.yaml                  # template cài containerd + kubeadm/kubelet/kubectl, 01 điền K8S_VERSION vào
 ├── scripts/
-│   ├── 01-create-cluster.sh         # tạo 2 VM
+│   ├── 01-create-cluster.sh         # tạo VM master + WORKER_COUNT worker
 │   ├── 02-init-master-cilium.sh     # kubeadm init + cài Cilium
 │   ├── 02-init-master.sh            # kubeadm init + cài Calico
-│   ├── 03-join-worker.sh            # cho worker join vào cụm
+│   ├── 03-join-worker.sh            # cho các worker join vào cụm
 │   ├── 04-destroy.sh                # xoá cụm
 │   └── fetch-kubeconfig.sh          # (tuỳ chọn) lấy kubeconfig về máy host
 ├── join-command.sh                  # sinh ra ở bước 02, KHÔNG commit/share
@@ -35,7 +36,7 @@ Dựng nhanh một cụm Kubernetes 2 node (1 master + 1 worker) bằng [Multipa
 
 - macOS hoặc Linux đã cài **Multipass**: `brew install --cask multipass`
 - **jq**: `brew install jq` (macOS có sẵn từ bản 15 trở lên)
-- Máy host còn trống tối thiểu khoảng 4 CPU, 4G RAM và 20G disk
+- Máy host còn trống tối thiểu khoảng 2 CPU, 2G RAM và 10G disk **cho mỗi VM**. Với cấu hình mặc định (1 master + 2 worker) là 6 CPU, 6G RAM, 30G disk
 - Có Internet, vì VM cần tải package, image và manifest CNI
 
 Kiểm tra:
@@ -48,14 +49,15 @@ jq --version
 ## Dựng cụm
 
 ```bash
-# 1. Tạo 2 VM. cloud-init sẽ cài package ngầm, mất vài phút.
+# 1. Tạo VM master + các worker. cloud-init sẽ cài package ngầm, mất vài phút.
+#    Muốn đổi số worker thì sửa WORKER_COUNT trong config.env TRƯỚC bước này.
 ./scripts/01-create-cluster.sh
 
 # 2. Khởi tạo master và cài CNI. Chọn MỘT trong hai:
 ./scripts/02-init-master-cilium.sh   # Cilium (khuyên dùng, gần với đề CKS hơn)
 ./scripts/02-init-master.sh          # Calico
 
-# 3. Join worker
+# 3. Join tất cả worker
 ./scripts/03-join-worker.sh
 ```
 
@@ -63,12 +65,28 @@ Bạn không cần tự đợi cloud-init chạy xong, vì script 02 và 03 đã
 
 > **Lưu ý:** mỗi cụm chỉ chạy **một** script 02. Muốn đổi CNI thì chạy `04-destroy.sh` rồi tạo lại từ đầu.
 
+## Đổi số lượng worker
+
+Số worker chỉ được đọc lúc dựng cụm. Muốn đổi, ví dụ từ 1 lên 3 worker, thì **xoá cụm rồi dựng lại**. Việc này chỉ mất vài phút:
+
+```bash
+./scripts/04-destroy.sh              # xoá master và mọi VM k8s-worker / k8s-worker-N
+# sửa WORKER_COUNT="3" trong config.env
+./scripts/01-create-cluster.sh
+./scripts/02-init-master-cilium.sh
+./scripts/03-join-worker.sh
+```
+
+`04-destroy.sh` tìm VM theo tên chứ không theo `WORKER_COUNT`. Vì vậy dù bạn sửa `WORKER_COUNT` trước hay sau khi xoá, script vẫn dọn hết worker của cụm cũ.
+
+Tài nguyên: mỗi VM dùng `CPUS`/`MEM`/`DISK` trong `config.env`. Hãy chừa khoảng 4–6G RAM cho máy host. Ví dụ máy 16G RAM chạy thoải mái 1 master + 3–4 worker với 2G mỗi VM. Muốn nhiều node hơn thì giảm `MEM` (ví dụ `1536M`).
+
 ## Kiểm tra cụm
 
 ```bash
 multipass shell k8s-master
 
-kubectl get nodes -o wide        # 2 node đều phải Ready
+kubectl get nodes -o wide        # mọi node đều phải Ready
 kubectl get pods -A              # mọi pod ở trạng thái Running
 ```
 
@@ -94,14 +112,14 @@ Khi thi CKS thật, bạn chỉ được SSH vào node. Vì vậy để luyện 
 
 ```bash
 multipass list                         # danh sách VM + IP
-multipass shell k8s-worker             # SSH vào worker
+multipass shell k8s-worker-1           # SSH vào worker 1
 multipass exec k8s-master -- <lệnh>    # chạy 1 lệnh trong VM
 multipass stop --all                   # tắt VM để tiết kiệm tài nguyên
 multipass start --all                  # bật lại, cụm tự chạy tiếp
 multipass snapshot k8s-master          # chụp snapshot (VM phải đang stop)
 ```
 
-Mẹo khi luyện đề: dựng cụm xong thì `multipass stop --all`, rồi `multipass snapshot` cho cả 2 node. Làm hỏng cụm thì `multipass restore` về trạng thái sạch, nhanh hơn nhiều so với dựng lại.
+Mẹo khi luyện đề: dựng cụm xong thì `multipass stop --all`, rồi `multipass snapshot` cho từng node. Làm hỏng cụm thì `multipass restore` về trạng thái sạch, nhanh hơn nhiều so với dựng lại.
 
 ## Xoá cụm
 
@@ -109,7 +127,7 @@ Mẹo khi luyện đề: dựng cụm xong thì `multipass stop --all`, rồi `m
 ./scripts/04-destroy.sh
 ```
 
-Script xoá hẳn 2 VM (`--purge`), đồng thời xoá `join-command.sh` và `kubeconfig.yaml`.
+Script xoá hẳn master và mọi VM worker (`--purge`), đồng thời xoá `join-command.sh` và `kubeconfig.yaml`.
 
 ## Xử lý sự cố
 

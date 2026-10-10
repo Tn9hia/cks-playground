@@ -1,0 +1,53 @@
+#cloud-config
+# Applied to both the master and the worker node.
+# Installs containerd + kubeadm/kubelet/kubectl and prepares the kernel/OS
+# prerequisites that kubeadm expects to already be in place.
+# This is a template: the K8S_VERSION placeholders below are filled in from config.env by
+# scripts/01-create-cluster.sh, so don't pass this file to multipass directly.
+
+package_update: true
+
+write_files:
+  - path: /etc/modules-load.d/k8s.conf
+    content: |
+      overlay
+      br_netfilter
+  - path: /etc/sysctl.d/99-kubernetes-cri.conf
+    content: |
+      net.bridge.bridge-nf-call-iptables  = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward                 = 1
+
+runcmd:
+  # --- disable swap (kubelet refuses to start with swap on) ---
+  - swapoff -a
+  - sed -i '/\sswap\s/s/^/#/' /etc/fstab
+
+  # --- kernel modules + sysctl for the bridge/overlay networking kubeadm needs ---
+  - modprobe overlay
+  - modprobe br_netfilter
+  - sysctl --system
+
+  # --- container runtime: containerd with the systemd cgroup driver ---
+  - apt-get update
+  - apt-get install -y apt-transport-https ca-certificates curl gnupg containerd
+  - mkdir -p /etc/containerd
+  - containerd config default > /etc/containerd/config.toml
+  - sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+  - systemctl restart containerd
+  - systemctl enable containerd
+
+  # --- kubeadm / kubelet / kubectl, pinned to a Kubernetes minor version ---
+  # Version comes from K8S_VERSION in config.env.
+  - mkdir -p /etc/apt/keyrings
+  - curl -fsSL https://pkgs.k8s.io/core:/stable:/${K8S_VERSION}/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  - echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/${K8S_VERSION}/deb/ /" > /etc/apt/sources.list.d/kubernetes.list
+  - apt-get update
+  - apt-get install -y kubelet kubeadm kubectl cri-tools
+  - apt-mark hold kubelet kubeadm kubectl
+  - systemctl enable kubelet
+
+  # --- crictl -> talk to containerd by default ---
+  - crictl config --set runtime-endpoint=unix:///run/containerd/containerd.sock
+  - crictl config --set image-endpoint=unix:///run/containerd/containerd.sock
+
